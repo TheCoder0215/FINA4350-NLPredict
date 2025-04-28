@@ -12,27 +12,58 @@ import numpy as np
 import yfinance as yf
 import nltk
 import sklearn
+import config
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from modules.data_collection import get_news, get_stock_data
 from modules.sentiment_analysis import analyze_sentiment
 from modules.feature_engineering import enhanced_feature_engineering
 from modules.modeling import advanced_model_training, evaluate_models, find_best_model
-from modules.visualization import visualize_enhanced_results, visualize_model_comparison
+from modules.visualization import (
+    visualize_sentiment_analysis, 
+    visualize_model_performance, 
+    visualize_feature_importance,
+    generate_html_report,
+    create_interactive_dashboard
+)
 
 def setup_logging():
-    """Configure logging to both file and console"""
+    """Configure logging to both file and console with proper hierarchy"""
     os.makedirs('logs', exist_ok=True)
     log_filename = f"logs/stock_sentiment_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
+    # Clear any existing handlers (important for rerunning the code)
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    
+    # Configure the root logger
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
+        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
         handlers=[
             logging.FileHandler(log_filename),
             logging.StreamHandler()
         ]
     )
+    
+    # Configure all imported modules to use the same log level
+    for name in ['modules', 'data_collection', 'feature_engineering', 
+                'modeling', 'sentiment_analysis', 'visualization', 
+                'utils', 'sklearn', 'yfinance']:
+        module_logger = logging.getLogger(name)
+        module_logger.setLevel(logging.INFO)
+        
+        # Don't propagate messages to avoid duplication
+        # (only needed for third-party modules that might have their own handlers)
+        if name in ['sklearn', 'yfinance']:
+            module_logger.propagate = False
+            # Clear any existing handlers
+            for handler in module_logger.handlers[:]:
+                module_logger.removeHandler(handler)
+            # Add our handlers
+            for handler in logging.root.handlers:
+                module_logger.addHandler(handler)
+    
     return log_filename
 
 def log_system_info():
@@ -53,9 +84,8 @@ def main():
     log_system_info()
     
     try:
-        # Define the 5 tech giants
-        tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
-        company_names = ["Apple", "Microsoft", "Google", "Amazon", "Meta"]
+        tickers = config.DEFAULT_TICKERS
+        company_names = config.DEFAULT_COMPANIES
         
         logging.info(f"Analyzing {len(tickers)} stocks: {', '.join(tickers)}")
         
@@ -143,7 +173,7 @@ def main():
                         logging.info(f"Model performance metrics:")
                         logging.info(f"  - MSE: {mse:.4f}")
                         logging.info(f"  - RMSE: {rmse:.4f}")
-                        logging.info(f"  - R²: {r2:.4f}")
+                        logging.info(f"  - R^2: {r2:.4f}")
                         logging.info(f"  - Data points: {len(X_valid)}")
                         
                         # Save prediction visualization
@@ -168,13 +198,79 @@ def main():
                         }
                     except Exception as metric_err:
                         logging.error(f"Error calculating metrics: {metric_err}")
-                        
-                # Generate detailed visualizations
-                visualize_enhanced_results(enhanced_data, model, features, target)
+
+                # Visualize sentiment
+                try:
+                    # Create directory for visualizations
+                    os.makedirs('visualizations', exist_ok=True)
+                    
+                    # Visualize sentiment vs price if we have sentiment data
+                    if 'raw_sentiment' in enhanced_data.columns:
+                        close_col = next((col for col in enhanced_data.columns if 'Close' in col), None)
+                        if close_col:
+                            sentiment_fig = visualize_sentiment_analysis(
+                                enhanced_data['raw_sentiment'], 
+                                enhanced_data[close_col],
+                                title=f"Sentiment vs. Price for {ticker}"
+                            )
+                            sentiment_fig.savefig(f'visualizations/{ticker}_sentiment.png', dpi=300)
+                            plt.close(sentiment_fig)
+                    
+                    # Visualize model predictions if possible
+                    if model and features and target:
+                        valid_data = enhanced_data[features + [target]].dropna()
+                        if len(valid_data) >= 10:
+                            X = valid_data[features]
+                            y = valid_data[target]
+                            dates = X.index
+                            
+                            try:
+                                y_pred = model.predict(X)
+                                model_type = 'classification' if target.startswith('Up_') else 'regression'
+                                
+                                perf_fig = visualize_model_performance(
+                                    y, y_pred, dates, model_type=model_type,
+                                    title=f"Model Performance for {ticker}"
+                                )
+                                perf_fig.savefig(f'visualizations/{ticker}_model_performance.png', dpi=300)
+                                plt.close(perf_fig)
+                            except Exception as viz_err:
+                                logging.error(f"Error creating model performance visualization: {viz_err}")
+                    
+                    # Visualize feature importance
+                    if model and features:
+                        try:
+                            importance_fig = visualize_feature_importance(model, features)
+                            importance_fig.savefig(f'visualizations/{ticker}_feature_importance.png', dpi=300)
+                            plt.close(importance_fig)
+                        except Exception as viz_err:
+                            logging.error(f"Error creating feature importance visualization: {viz_err}")
+                            
+                except Exception as viz_error:
+                    logging.error(f"Error creating visualizations: {viz_error}")
+
+                # Visualize model performance if we have predictions
+                valid = enhanced_data[features].notna().all(axis=1) & enhanced_data[target].notna()
+                X = enhanced_data.loc[valid, features]
+                y = enhanced_data.loc[valid, target]
+                dates = X.index
+
+                if len(X) >= 5:
+                    y_pred = model.predict(X)
+                    model_type = 'classification' if target.startswith('Up_') else 'regression'
+                    
+                    perf_fig = visualize_model_performance(
+                        y, y_pred, dates, model_type=model_type,
+                        title=f"Model Performance: {ticker}"
+                    )
+                    perf_fig.savefig(f'visualizations/{ticker}_model_performance.png')
+                    plt.close(perf_fig)
             
             except Exception as e:
                 logging.error(f"Error analyzing {ticker}: {str(e)}")
                 logging.exception("Stack trace:")
+                print(f"Error analyzing {ticker}. Continuing with next stock...")
+                continue  # Skip to the next ticker
             
             finally:
                 total_time = time.time() - start_time
@@ -200,8 +296,19 @@ def main():
                 logging.info(f"Target: {best_model_info['target']}")
                 logging.info(f"R² Score: {best_model_info['metrics']['r2']:.4f}")
                 
-                # Create summary visualization
-                visualize_model_comparison(results, model_metrics, best_model_info)
+                if results:
+                    try:
+                        # Generate interactive dashboard
+                        dashboard_path = create_interactive_dashboard(results, model_metrics, best_model_info)
+                        logging.info(f"Interactive dashboard created at: {dashboard_path}")
+                        print(f"Interactive dashboard created at: {dashboard_path}")
+                        
+                        # Generate HTML report
+                        report_path = generate_html_report(results, model_metrics, best_model_info)
+                        logging.info(f"HTML report created at: {report_path}")
+                        print(f"HTML report created at: {report_path}")
+                    except Exception as report_err:
+                        logging.error(f"Error generating reports: {report_err}")
                 
                 # Print to console for user convenience (log file may be long)
                 print("\nAnalysis complete!")
@@ -210,6 +317,8 @@ def main():
                 print(f"Features: {best_model_info['features']}")
                 print(f"Target: {best_model_info['target']}")
                 print(f"R² Score: {best_model_info['metrics']['r2']:.4f}")
+
+                
             else:
                 logging.warning("No best model could be determined.")
                 print("\nAnalysis complete, but no best model could be determined.")
