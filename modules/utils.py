@@ -5,9 +5,17 @@ Utility functions for stock sentiment analysis
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import config
+import logging
 
-def filter_features(df, min_valid_ratio=0.3):
+logger = logging.getLogger(__name__)
+
+
+def filter_features(df, min_valid_ratio=None):
     """Only keep features with at least min_valid_ratio non-NaN values"""
+    if min_valid_ratio is None:
+        min_valid_ratio = config.MIN_VALID_RATIO
+    
     valid_cols = []
     for col in df.columns:
         valid_ratio = df[col].notna().mean()
